@@ -57,39 +57,47 @@ class RospyLogger(logging.getLoggerClass()):
         """
         file_name, lineno, func_name = super(RospyLogger, self).findCaller(*args, **kwargs)[:3]
         file_name = os.path.normcase(file_name)
+        # Use inspect.stack() which can be more efficient than manually traversing frames
+        # This also handles the None checks that were scattered throughout the original
+        frame_info = None
 
-        f = inspect.currentframe()
-        if f is not None:
-            f = f.f_back
-        while hasattr(f, "f_code"):
-            # Search for the right frame using the data already found by parent class.
-            co = f.f_code
-            filename = os.path.normcase(co.co_filename)
-            if filename == file_name and f.f_lineno == lineno and co.co_name == func_name:
-                break
-            if f.f_back:
-                f = f.f_back
-
-        # Jump up two more frames, as the logger methods have been double wrapped.
-        if f is not None and f.f_back and f.f_code and f.f_code.co_name == '_base_logger':
-            f = f.f_back
-            if f.f_back:
-                f = f.f_back
-        co = f.f_code
-        func_name = co.co_name
-
-        # Now extend the function name with class name, if available.
+        # Get the current stack and search for our target frame
         try:
-            class_name = f.f_locals['self'].__class__.__name__
-            func_name = '%s.%s' % (class_name, func_name)
-        except KeyError:  # if the function is unbound, there is no self.
-            pass
+            stack = inspect.stack()
+            # Find the frame that matches the data from parent class
+            for frame_info in stack:
+                frame = frame_info.frame
+                co = frame.f_code
+                if (os.path.normcase(co.co_filename) == file_name and
+                        frame.f_lineno == lineno and
+                        co.co_name == func_name):
 
-        if sys.version_info > (3, 2):
-            # Dummy last argument to match Python3 return type
-            return co.co_filename, f.f_lineno, func_name, None
-        else:
-            return co.co_filename, f.f_lineno, func_name
+                    # Found the matching frame, now jump up two frames if needed
+                    idx = stack.index(frame_info)
+                    if (idx + 2 < len(stack) and
+                            stack[idx].frame.f_code.co_name == '_base_logger'):
+                        frame_info = stack[idx + 2]
+                        frame = frame_info.frame
+
+                    # Extract the relevant information
+                    co = frame.f_code
+                    func_name = co.co_name
+
+                    # Add class name if available
+                    try:
+                        if 'self' in frame.f_locals:
+                            class_name = frame.f_locals['self'].__class__.__name__
+                            func_name = f'{class_name}.{func_name}'
+                    except (KeyError, AttributeError):
+                        pass
+
+                    return co.co_filename, frame.f_lineno, func_name, None
+        finally:
+            # Properly clean up frame references to avoid reference cycles
+            del stack
+
+        # Fallback if we couldn't find the right frame
+        return file_name, lineno, func_name, None
 
 logging.setLoggerClass(RospyLogger)
 
